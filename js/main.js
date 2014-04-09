@@ -1,6 +1,17 @@
 'use strict';
+var sendChannel;
+var sendButton = document.getElementById("sendButton");
+var sendTextarea = document.getElementById("dataChannelSend");
+var receiveTextarea = document.getElementById("dataChannelReceive");
+
+sendButton.onclick = sendData;
+
+/////////////////////////////////////////////
 // input room name
 var room = prompt("Enter room name:");
+if (room === '') {
+  room = 'foo';
+} 
 
 var isChannelReady;
 var isInitiator = false;
@@ -11,23 +22,12 @@ var remoteStream;
 var turnReady;
 
 var pc_config = {'iceServers': [{'url': 'stun:stun.l.google.com:19302'}]};
-
-var pc_constraints = {'optional': [{'DtlsSrtpKeyAgreement': true}]};
+var pc_constraints = {'optional': [{'DtlsSrtpKeyAgreement': true}, {'RtpDataChannels': true}]};
 
 // Set up audio and video regardless of what devices are present.
 var sdpConstraints = {'mandatory': {
   'OfferToReceiveAudio':true,
   'OfferToReceiveVideo':true }};
-
-/////////////////////////////////////////////
-
-// var room = location.pathname.substring(1);
-if (room === '') {
-//  room = prompt('Enter room name:');
-  room = 'foo';
-} else {
-  //
-}
 
 var socket = io.connect();
 
@@ -141,7 +141,7 @@ window.onbeforeunload = function(e){
 
 function createPeerConnection() {
   try {
-    pc = new RTCPeerConnection(null);
+    pc = new RTCPeerConnection(null, pc_constraints);
     pc.onicecandidate = handleIceCandidate;
     pc.onaddstream = handleRemoteStreamAdded;
     pc.onremovestream = handleRemoteStreamRemoved;
@@ -151,6 +151,21 @@ function createPeerConnection() {
     alert('Cannot create RTCPeerConnection object.');
       return;
   }
+  
+  try {
+      // Reliable Data Channels not yet supported in Chrome
+      sendChannel = pc.createDataChannel("sendDataChannel",
+        {reliable: false});
+      sendChannel.onmessage = handleMessage;
+      trace('Created send data channel');
+    } catch (e) {
+      alert('Failed to create data channel. ' +
+            'You need Chrome M25 or later with RtpDataChannel enabled');
+      trace('createDataChannel() failed with exception: ' + e.message);
+    }
+    sendChannel.onopen = handleSendChannelStateChange;
+    sendChannel.onclose = handleSendChannelStateChange;
+    pc.ondatachannel = gotReceiveChannel;
 }
 
 function handleIceCandidate(event) {
@@ -170,6 +185,7 @@ function handleRemoteStreamAdded(event) {
   console.log('Remote stream added.');
   remoteVideo.src = window.URL.createObjectURL(event.stream);
   remoteStream = event.stream;
+  sendButton.disabled = false;
 }
 
 function handleCreateOfferError(event){
@@ -223,12 +239,6 @@ function requestTurn(turn_url) {
   }
 }
 
-function handleRemoteStreamAdded(event) {
-  console.log('Remote stream added.');
-  remoteVideo.src = window.URL.createObjectURL(event.stream);
-  remoteStream = event.stream;
-}
-
 function handleRemoteStreamRemoved(event) {
   console.log('Remote stream removed. Event: ', event);
 }
@@ -240,17 +250,18 @@ function hangup() {
 }
 
 function handleRemoteHangup() {
-//  console.log('Session terminated.');
-  // stop();
+ 	console.log('Session terminated.');
+	stop();
   // isInitiator = false;
 }
 
 function stop() {
-  isStarted = false;
+  	isStarted = false;
   // isAudioMuted = false;
   // isVideoMuted = false;
-  pc.close();
-  pc = null;
+  	pc.close();
+  	pc = null;
+  	trace('connection closed');
 }
 
 ///////////////////////////////////////////
@@ -330,3 +341,55 @@ function removeCN(sdpLines, mLineIndex) {
   return sdpLines;
 }
 
+function sendData() {
+  var data = sendTextarea.value;
+  sendChannel.send(data);
+  trace('Sent data: ' + data);
+  sendTextarea.value = '';
+}
+
+function handleMessage(event) {
+  trace('Received message: ' + event.data);
+  receiveTextarea.value += event.data + '\n';
+}
+
+function gotReceiveChannel(event) {
+  trace('Receive Channel Callback');
+  sendChannel = event.channel;
+  sendChannel.onmessage = handleMessage;
+  sendChannel.onopen = handleReceiveChannelStateChange;
+  sendChannel.onclose = handleReceiveChannelStateChange;
+}
+
+function handleSendChannelStateChange() {
+  var readyState = sendChannel.readyState;
+  trace('Send channel state is: ' + readyState);
+  // enableMessageInterface(readyState == "open");
+}
+
+function handleReceiveChannelStateChange() {
+  var readyState = sendChannel.readyState;
+  trace('Receive channel state is: ' + readyState);
+  // enableMessageInterface(readyState == "open");
+}
+
+function enableMessageInterface(shouldEnable) {
+    if (shouldEnable) {
+    dataChannelSend.disabled = false;
+    dataChannelSend.focus();
+    dataChannelSend.placeholder = "";
+    sendButton.disabled = false;
+  } else {
+    dataChannelSend.disabled = true;
+    sendButton.disabled = true;
+  }
+}
+
+function mergeConstraints(cons1, cons2) {
+  var merged = cons1;
+  for (var name in cons2.mandatory) {
+    merged.mandatory[name] = cons2.mandatory[name];
+  }
+  merged.optional.concat(cons2.optional);
+  return merged;
+}
